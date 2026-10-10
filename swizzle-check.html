@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<!-- Host check of the TEXTURE_SWIZZLE emulation in dist/guest-gl-remote.js on
+     the browser's real WebGL2: drives handleGlCall with guest command streams
+     and reads the pixels back. Run by swizzle-check.mjs; the page writes
+     "PASS ..." or "FAIL ..." lines into <pre id=out>. -->
+<meta charset="utf-8">
+<pre id="out">RUNNING</pre>
+<script type="module">
+import { handleGlCall, setKeyedPresent, OPS, OP_GL_OPEN, OP_GL_EXEC } from "../../dist/guest-gl-remote.js";
+
+const GL = {
+    TEXTURE_2D: 0x0DE1, RGBA: 0x1908, RGBA8: 0x8058, UNSIGNED_BYTE: 0x1401, TEXTURE0: 0x84C0,
+    TEXTURE_SWIZZLE_R: 0x8E42, TEXTURE_SWIZZLE_G: 0x8E43, TEXTURE_SWIZZLE_B: 0x8E44, TEXTURE_SWIZZLE_A: 0x8E45,
+    RED: 0x1903, GREEN: 0x1904, BLUE: 0x1905, ALPHA: 0x1906, ZERO: 0, ONE: 1,
+    VERTEX_SHADER: 0x8B31, FRAGMENT_SHADER: 0x8B30, TRIANGLES: 4, FRAMEBUFFER: 0x8D40, COLOR_ATTACHMENT0: 0x8CE0,
+    COLOR_BUFFER_BIT: 0x4000, SCISSOR_TEST: 0x0C11, BLEND: 0x0BE2, VIEWPORT: 0x0BA2, SCISSOR_BOX: 0x0C10,
+    TEXTURE_MIN_FILTER: 0x2801, TEXTURE_MAG_FILTER: 0x2800, NEAREST: 0x2600, INVALID_ENUM: 0x0500,
+};
+const memory = new WebAssembly.Memory({ initial: 16 });
+const CMD = 0x1000, REPLY = 0x20000, PIXELS = 0x30000;
+const log = (line) => console.log(line);
+const lines = [];
+let failed = 0;
+function check(name, ok, detail = "") {
+    lines.push(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ": " + detail : ""}`);
+    if (!ok)
+        failed++;
+}
+
+// Command stream builder: op name, then words (numbers, Float32 via f(), blobs via blob()).
+const f = (v) => ({ f: v });
+const inline = (bytes) => ({ inline: bytes });
+const pointer = (address, bytes) => ({ pointer: address, bytes });
+function encode(commands) {
+    const words = [], f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
+    for (const [name, ...args] of commands) {
+        const op = OPS.indexOf(name) + 1;
+        if (!op)
+            throw new Error(`no op ${name}`);
+        const body = [];
+        for (const a of args) {
+            if (typeof a === "number")
+                body.push(a >>> 0);
+            else if ("f" in a) {
+                f32[0] = a.f;
+                body.push(u32[0]);
+            }
+            else if ("inline" in a) {
+                const padded = new Uint8Array((a.inline.length + 3) & ~3);
+                padded.set(a.inline);
+                body.push(a.inline.length, 0, ...new Uint32Array(padded.buffer));
+            }
+            else if ("pointer" in a)
+                body.push(a.bytes, 2, a.pointer);
+            else if ("none" in a)
+                body.push(a.none, 1);
+        }
+        words.push((op | body.length << 12) >>> 0, ...body);
+    }
+    return Uint32Array.from(words);
+}
+function exec(ctx, commands) {
+    const words = encode(commands);
+    new Uint32Array(memory.buffer, CMD, words.length).set(words);
+    const n = handleGlCall(memory, OP_GL_EXEC, [ctx, CMD, words.length * 4, REPLY, 0x8000], log);
+    if (!n)
+        return null;
+    const view = new DataView(memory.buffer, REPLY, n);
+    return Array.from({ length: view.getUint32(0, true) }, (_, k) => view.getFloat64(8 + k * 8, true));
+}
+const text = (s) => inline(new TextEncoder().encode(s));
+function pixels(ctx, x, y, w, h) {
+    exec(ctx, [["ReadPixels", x, y, w, h, GL.RGBA, GL.UNSIGNED_BYTE, pointer(PIXELS, w * h * 4)], ["GetError"]]);
+    return Array.from(new Uint8Array(memory.buffer, PIXELS, w * h * 4));
+}
+const same = (a, b) => a.length === b.length && a.every((v, k) => v === b[k]);
+
+try {
+    const probe = new OffscreenCanvas(1, 1).getContext("webgl2");
+    check("host WebGL2", !!probe, probe ? probe.getParameter(probe.VERSION) : "no OffscreenCanvas WebGL2 context");
+    probe?.getExtension("WEBGL_lose_context")?.loseContext();
+    const ctx = handleGlCall(memory, OP_GL_OPEN, [2, 0x40000, 0x8000, 0], log);
+    const TEX = 1, FB = 2, VS = 10, FS = 11, PROG = 12;
+    const texel = [10, 20, 30, 40, 50, 60, 70, 80];
+    exec(ctx, [
+        ["SetSurface", 4, 2],
+        ["GenObjects", 1, 1, TEX], ["GenObjects", 2, 1, FB],
+        ["ActiveTexture", GL.TEXTURE0], ["BindTexture", GL.TEXTURE_2D, TEX],
+        ["TexImage2D", GL.TEXTURE_2D, 0, GL.RGBA8, 2, 1, 0, GL.RGBA, GL.UNSIGNED_BYTE, inline(new Uint8Array(texel))],
+        ["TexParameteri", GL.TEXTURE_2D, GL.TEXTURE_MIN_FILTER, GL.NEAREST],
+        ["TexParameteri", GL.TEXTURE_2D, GL.TEXTURE_MAG_FILTER, GL.NEAREST],
+        ["CreateShader", GL.VERTEX_SHADER, VS], ["CreateShader", GL.FRAGMENT_SHADER, FS],
+        ["ShaderSource", VS, text("#version 300 es\nvoid main() { vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }\n")],
+        // Samples with filtering, so the shadow's copied sampler parameters matter.
+        ["ShaderSource", FS, text("#version 300 es\nprecision highp float; uniform sampler2D t; out vec4 o;\nvoid main() { o = texture(t, (gl_FragCoord.xy - vec2(0.0)) / vec2(2.0, 1.0)); }\n")],
+        ["CompileShader", VS], ["CompileShader", FS], ["CreateProgram", PROG], ["AttachShader", PROG, VS], ["AttachShader", PROG, FS],
+        ["LinkProgram", PROG], ["UseProgram", PROG],
+        ["ClearColor", f(0), f(0), f(0), f(0)], ["Clear", GL.COLOR_BUFFER_BIT],
+        ["Viewport", 0, 0, 2, 1], ["Scissor", 1, 0, 1, 1],
+    ]);
+    const draw = () => exec(ctx, [["DrawArrays", GL.TRIANGLES, 0, 3]]);
+    const swizzle = (r, g, b, a) => exec(ctx, [["TexParameteri", GL.TEXTURE_2D, GL.TEXTURE_SWIZZLE_R, r], ["TexParameteri", GL.TEXTURE_2D, GL.TEXTURE_SWIZZLE_G, g],
+        ["TexParameteri", GL.TEXTURE_2D, GL.TEXTURE_SWIZZLE_B, b], ["TexParameteri", GL.TEXTURE_2D, GL.TEXTURE_SWIZZLE_A, a]]);
+
+    draw();
+    check("identity", same(pixels(ctx, 0, 0, 2, 1), texel), pixels(ctx, 0, 0, 2, 1).join());
+
+    swizzle(GL.BLUE, GL.GREEN, GL.RED, GL.ALPHA);
+    check("query swizzle", same([exec(ctx, [["GetTexParameter", GL.TEXTURE_2D, GL.TEXTURE_SWIZZLE_R]])[0], exec(ctx, [["GetTexParameter", GL.TEXTURE_2D, GL.TEXTURE_SWIZZLE_A]])[0]], [GL.BLUE, GL.ALPHA]));
+    draw();
+    let got = pixels(ctx, 0, 0, 2, 1);
+    check("bgra swizzle", same(got, [30, 20, 10, 40, 70, 60, 50, 80]), got.join());
+    check("texture binding restored", exec(ctx, [["GetParameter", 0x8069]])[0] === TEX);
+
+    exec(ctx, [["TexSubImage2D", GL.TEXTURE_2D, 0, 1, 0, 1, 1, GL.RGBA, GL.UNSIGNED_BYTE, inline(new Uint8Array([1, 2, 3, 4]))]]);
+    draw();
+    got = pixels(ctx, 0, 0, 2, 1);
+    check("sub-image refresh", same(got, [30, 20, 10, 40, 3, 2, 1, 4]), got.join());
+
+    swizzle(GL.BLUE, GL.ZERO, GL.RED, GL.ONE);
+    draw();
+    got = pixels(ctx, 0, 0, 2, 1);
+    check("zero/one swizzle", same(got, [30, 0, 10, 255, 3, 0, 1, 255]), got.join());
+
+    // Render into the texture: the shadow must follow.
+    swizzle(GL.BLUE, GL.GREEN, GL.RED, GL.ALPHA);
+    exec(ctx, [["BindFramebuffer", GL.FRAMEBUFFER, FB], ["FramebufferTexture2D", GL.FRAMEBUFFER, GL.COLOR_ATTACHMENT0, GL.TEXTURE_2D, TEX, 0],
+        ["ClearColor", f(1), f(0.5), f(0), f(1)], ["Clear", GL.COLOR_BUFFER_BIT], ["BindFramebuffer", GL.FRAMEBUFFER, 0]]);
+    draw();
+    got = pixels(ctx, 0, 0, 2, 1);
+    check("render-to-texture refresh", same(got, [0, 128, 255, 255, 0, 128, 255, 255]) || same(got, [0, 127, 255, 255, 0, 127, 255, 255]), got.join());
+
+    // Guest state survives the shadow pass: scissor test, viewport and scissor box.
+    exec(ctx, [["ClearColor", f(0), f(0), f(0), f(0)], ["Clear", GL.COLOR_BUFFER_BIT], ["Enable", GL.SCISSOR_TEST],
+        ["TexSubImage2D", GL.TEXTURE_2D, 0, 0, 0, 2, 1, GL.RGBA, GL.UNSIGNED_BYTE, inline(new Uint8Array(texel))]]);
+    draw();
+    got = pixels(ctx, 0, 0, 4, 2);
+    const want = [0, 0, 0, 0, 70, 60, 50, 80, 0, 0, 0, 0, 0, 0, 0, 0, ...new Array(16).fill(0)];
+    check("guest scissor kept", same(got, want), got.join());
+    const viewport = exec(ctx, [["GetParameter", GL.VIEWPORT]]), box = exec(ctx, [["GetParameter", GL.SCISSOR_BOX]]);
+    check("viewport and scissor box kept", same(viewport, [0, 0, 2, 1]) && same(box, [1, 0, 1, 1]), `${viewport} ${box}`);
+    check("scissor test kept", exec(ctx, [["IsEnabled", GL.SCISSOR_TEST]])[0] === 1);
+    check("blend kept off", exec(ctx, [["IsEnabled", GL.BLEND]])[0] === 0);
+    exec(ctx, [["Disable", GL.SCISSOR_TEST]]);
+
+    swizzle(GL.RED, GL.GREEN, GL.BLUE, GL.ALPHA);
+    draw();
+    got = pixels(ctx, 0, 0, 2, 1);
+    check("back to identity", same(got, texel), got.join());
+
+    check("no GL error", exec(ctx, [["GetError"]])[0] === 0);
+
+    // The shadow pass rebinds the guest's program and vertex array afterwards.
+    // A deleted current program stays in use (GL), a deleted bound vertex array
+    // is unbound; neither may leave the pass's own objects bound.
+    const VAO = 20;
+    swizzle(GL.BLUE, GL.GREEN, GL.RED, GL.ALPHA);
+    exec(ctx, [["GenObjects", 6, 1, VAO], ["BindVertexArray", VAO], ["DeleteObjects", 6, 1, VAO], ["DeleteProgram", PROG],
+        ["TexSubImage2D", GL.TEXTURE_2D, 0, 0, 0, 1, 1, GL.RGBA, GL.UNSIGNED_BYTE, inline(new Uint8Array([5, 6, 7, 8]))]]);
+    draw();
+    got = pixels(ctx, 0, 0, 2, 1);
+    check("deleted current program still draws", same(got, [7, 6, 5, 8, 70, 60, 50, 80]), got.join());
+    exec(ctx, [["TexSubImage2D", GL.TEXTURE_2D, 0, 0, 0, 1, 1, GL.RGBA, GL.UNSIGNED_BYTE, inline(new Uint8Array([9, 10, 11, 12]))]]);
+    draw();
+    got = pixels(ctx, 0, 0, 2, 1);
+    check("deleted current program again", same(got, [11, 10, 9, 12, 70, 60, 50, 80]), got.join());
+    check("no GL error after deletes", exec(ctx, [["GetError"]])[0] === 0);
+    exec(ctx, [["TexParameteri", GL.TEXTURE_2D, GL.TEXTURE_SWIZZLE_R, 0x1234]]);
+    check("bad swizzle value is INVALID_ENUM", exec(ctx, [["GetError"]])[0] === GL.INVALID_ENUM);
+
+    // Keyed presentation hands the canvas's frame over as an ImageBitmap; the
+    // canvas must still hold it afterwards (buffer age 1: the guest redraws only
+    // damage), and the guest's scissor state must survive the copy.
+    const posted = [];
+    globalThis.postMessage = (message) => posted.push(message);
+    setKeyedPresent(true);
+    const win = handleGlCall(memory, OP_GL_OPEN, [2, 0x40000, 0x8000, 0], log);
+    exec(win, [["SetSurface", 2, 1], ["ClearColor", f(1), f(0), f(0), f(1)], ["Clear", GL.COLOR_BUFFER_BIT],
+        ["Enable", GL.SCISSOR_TEST], ["Scissor", 1, 0, 1, 1], ["ClearColor", f(0), f(0), f(1), f(1)], ["Clear", GL.COLOR_BUFFER_BIT]]);
+    const frame = [255, 0, 0, 255, 0, 0, 255, 255];
+    const shown = () => {
+        const bitmap = posted.at(-1)?.bitmap;
+        if (!bitmap)
+            return [];
+        const view = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d");
+        view.drawImage(bitmap, 0, 0);
+        return Array.from(view.getImageData(0, 0, bitmap.width, bitmap.height).data);
+    };
+    const key = exec(win, [["PresentSurface", 0, 0, 0, 0, 0, 2, 1]])[0];
+    check("keyed present", key > 0 && posted.length === 1, `key ${key}`);
+    check("keyed frame shown", same(shown(), frame), shown().join());
+    got = pixels(win, 0, 0, 2, 1);
+    check("canvas keeps frame after present", same(got, frame), got.join());
+    exec(win, [["PresentSurface", 0, 0, 0, 0, 0, 2, 1]]);
+    check("unchanged frame presented again", same(shown(), frame), shown().join());
+    exec(win, [["ClearColor", f(0), f(1), f(0), f(1)], ["Clear", GL.COLOR_BUFFER_BIT]]);
+    got = pixels(win, 0, 0, 2, 1);
+    check("scissor kept across present", same(got, [255, 0, 0, 255, 0, 255, 0, 255]), got.join());
+    check("no GL error after present", exec(win, [["GetError"]])[0] === 0);
+    setKeyedPresent(false);
+}
+catch (error) {
+    check("exception", false, String(error?.stack ?? error));
+}
+document.getElementById("out").textContent = lines.join("\n") + `\n${failed ? "FAILED" : "ALL PASSED"} ${failed}\n`;
+</script>

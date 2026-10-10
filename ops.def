@@ -1,0 +1,151 @@
+/* Command stream opcodes of the guest GLES remote (glremote.c -> host
+ * dist/guest-gl-remote.js). The order is the wire numbering (first entry = 1);
+ * the host keeps the same list (check-ops.mjs compares them). Arguments are
+ * 32-bit words; "blob" is [bytes, mode, ...] with mode 0 inline data, 1 null,
+ * 2 guest pointer, 3 buffer offset. Ops marked sync write a reply and end the
+ * batch. */
+OP(SetSurface)                 /* width, height */
+OP(GenObjects)                 /* kind, n, names[n] */
+OP(DeleteObjects)              /* kind, n, names[n] */
+OP(ActiveTexture)
+OP(AttachShader)
+OP(BindAttribLocation)         /* program, index, blob name */
+OP(BindBuffer)
+OP(BindFramebuffer)
+OP(BindRenderbuffer)
+OP(BindTexture)
+OP(BlendColor)
+OP(BlendEquation)
+OP(BlendEquationSeparate)
+OP(BlendFunc)
+OP(BlendFuncSeparate)
+OP(BufferData)                 /* target, usage, blob (null blob: size only) */
+OP(BufferSubData)              /* target, offset, blob */
+OP(Clear)
+OP(ClearColor)
+OP(ClearDepthf)
+OP(ClearStencil)
+OP(ColorMask)
+OP(CompileShader)
+OP(CompressedTexImage2D)       /* target, level, ifmt, w, h, border, blob */
+OP(CompressedTexSubImage2D)    /* target, level, x, y, w, h, format, blob */
+OP(CopyTexImage2D)
+OP(CopyTexSubImage2D)
+OP(CreateProgram)              /* name */
+OP(CreateShader)               /* type, name */
+OP(CullFace)
+OP(DeleteProgram)
+OP(DeleteShader)
+OP(DepthFunc)
+OP(DepthMask)
+OP(DepthRangef)
+OP(DetachShader)
+OP(Disable)
+OP(DisableVertexAttribArray)
+OP(DrawArrays)
+OP(DrawElements)               /* mode, count, type, offset */
+OP(Enable)
+OP(EnableVertexAttribArray)
+OP(Finish)
+OP(Flush)
+OP(FramebufferRenderbuffer)
+OP(FramebufferTexture2D)
+OP(FrontFace)
+OP(GenerateMipmap)
+OP(Hint)
+OP(LineWidth)
+OP(LinkProgram)
+OP(PixelStorei)
+OP(PolygonOffset)
+OP(ReadPixels)                 /* x, y, w, h, format, type, blob (out: guest pointer or pack offset) */
+OP(RenderbufferStorage)
+OP(SampleCoverage)
+OP(Scissor)
+OP(ShaderSource)               /* shader, blob source */
+OP(StencilFunc)
+OP(StencilFuncSeparate)
+OP(StencilMask)
+OP(StencilMaskSeparate)
+OP(StencilOp)
+OP(StencilOpSeparate)
+OP(TexImage2D)                 /* target, level, ifmt, w, h, border, format, type, blob */
+OP(TexParameterf)
+OP(TexParameteri)
+OP(TexSubImage2D)              /* target, level, x, y, w, h, format, type, blob */
+OP(Uniformf)                   /* location, n(1..4), values[n] */
+OP(Uniformi)
+OP(Uniformui)
+OP(Uniformfv)                  /* location, n(1..4), count, blob */
+OP(Uniformiv)
+OP(Uniformuiv)
+OP(UniformMatrixfv)            /* location, cols, rows, count, transpose, blob */
+OP(UseProgram)
+OP(ValidateProgram)
+OP(VertexAttribf)              /* index, x, y, z, w */
+OP(VertexAttribPointer)        /* index, size, type, normalized, stride, offset */
+OP(Viewport)
+OP(ReadBuffer)
+OP(DrawRangeElements)          /* mode, start, end, count, type, offset */
+OP(TexImage3D)                 /* target, level, ifmt, w, h, d, border, format, type, blob */
+OP(TexSubImage3D)              /* target, level, x, y, z, w, h, d, format, type, blob */
+OP(CopyTexSubImage3D)
+OP(CompressedTexImage3D)       /* target, level, ifmt, w, h, d, border, blob */
+OP(CompressedTexSubImage3D)    /* target, level, x, y, z, w, h, d, format, blob */
+OP(BeginQuery)
+OP(EndQuery)
+OP(DrawBuffers)                /* n, bufs[n] */
+OP(BlitFramebuffer)
+OP(RenderbufferStorageMultisample)
+OP(FramebufferTextureLayer)
+OP(BindVertexArray)
+OP(BeginTransformFeedback)
+OP(EndTransformFeedback)
+OP(BindBufferRange)
+OP(BindBufferBase)
+OP(TransformFeedbackVaryings)  /* program, mode, blob (NUL separated names) */
+OP(VertexAttribIPointer)       /* index, size, type, stride, offset */
+OP(VertexAttribI4i)
+OP(VertexAttribI4ui)
+OP(ClearBufferiv)              /* buffer, drawbuffer, v[4] */
+OP(ClearBufferuiv)
+OP(ClearBufferfv)
+OP(ClearBufferfi)
+OP(CopyBufferSubData)
+OP(UniformBlockBinding)
+OP(DrawArraysInstanced)
+OP(DrawElementsInstanced)      /* mode, count, type, offset, instances */
+OP(BindSampler)
+OP(SamplerParameteri)
+OP(SamplerParameterf)
+OP(VertexAttribDivisor)
+OP(BindTransformFeedback)
+OP(PauseTransformFeedback)
+OP(ResumeTransformFeedback)
+OP(InvalidateFramebuffer)      /* target, n, attachments[n] */
+OP(InvalidateSubFramebuffer)   /* target, x, y, w, h, n, attachments[n] */
+OP(TexStorage2D)
+OP(TexStorage3D)
+/* Sync queries: the reply is [u32 count][f64 values] unless noted. */
+OP(GetParameter)               /* pname */
+OP(GetIndexedParameter)        /* target, index */
+OP(GetBufferParameter)         /* target, pname */
+OP(GetFramebufferAttachmentParameter) /* target, attachment, pname */
+OP(GetRenderbufferParameter)   /* target, pname */
+OP(GetTexParameter)            /* target, pname */
+OP(GetSamplerParameter)        /* sampler, pname */
+OP(GetVertexAttrib)            /* index, pname */
+OP(GetVertexAttribOffset)      /* index, pname */
+OP(GetQuery)                   /* target, pname */
+OP(GetQueryParameter)          /* query, pname */
+OP(GetUniform)                 /* program, location */
+OP(GetShaderPrecisionFormat)   /* shadertype, precisiontype */
+OP(GetInternalformatParameter) /* target, internalformat, pname */
+OP(GetError)
+OP(IsEnabled)                  /* cap */
+OP(IsObject)                   /* kind, name */
+OP(CheckFramebufferStatus)     /* target */
+OP(GetFragDataLocation)        /* program, blob name */
+OP(ProgramInfo)                /* program; reply is text (see guest-gl-remote.js) */
+OP(ShaderInfo)                 /* shader; reply is text */
+OP(GetBufferSubData)           /* target, offset, blob (out: guest pointer) */
+OP(PresentSurface)             /* flags, root x, y, damage x, y, w, h; reply: key or 0 */
